@@ -28,7 +28,7 @@ def extract_credentials(text):
     cleaned = re.sub(r':contentReference\[.*?\](?:\{.*?\})?', '', text).strip()
     host, port, user, pwd = None, "8080", None, None
 
-    # مسار xtream
+    # 1. روابط الستريم المباشرة Xtream
     xtream_match = re.search(
         r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})[/\s]+(?:live/|movie/|series/)?([a-zA-Z0-9_-]{3,35})[/\s]+([a-zA-Z0-9_-]{3,35})[/\s]+\d+',
         cleaned, re.IGNORECASE
@@ -38,7 +38,7 @@ def extract_credentials(text):
         if not any(bad in h.lower() for bad in ["images", "image", "logo", "web"]):
             return h, p or "8080", u, pw
 
-    # استعلام get.php
+    # 2. روابط get.php
     query_match = re.search(
         r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]*(\d{2,5})?/[^\s"\'<>]*?[?&]username=([^&\s"\'<>]+)&(?:amp;)?password=([^&\s"\'<>]+)',
         cleaned, re.IGNORECASE
@@ -48,7 +48,7 @@ def extract_credentials(text):
         if not any(bad in h.lower() for bad in ["images", "image", "logo"]):
             return h, p or "8080", u, pw
 
-    # كروت السيرفرات (Host / User / Pass)
+    # 3. استخراج بحسب الكلمات المفتاحية (Host / User / Pass)
     host_match = re.search(r'(?:Host(?:-Port)?|Server|URL|الدومين|السيرفر)\s*[:=]\s*(?:https?://)?([a-zA-Z0-9.-]+(?::\d+)?)', cleaned, re.IGNORECASE)
     if host_match:
         raw_hp = host_match.group(1).strip()
@@ -69,6 +69,20 @@ def extract_credentials(text):
 
     pass_match = re.search(r'(?:Pass(?:word)?|PWD|باسورد|المرور)\s*[:=]\s*([^&\s\r\n;]+)', cleaned, re.IGNORECASE)
     if pass_match: pwd = pass_match.group(1).strip()
+
+    # 4. الاستخراج الذكي من 3 أسطر متتالية (بدون كلمات مفتاحية)
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if (not user or not pwd) and len(lines) >= 3:
+        cand_u = lines[1].replace("USER:", "").replace("User:", "").strip()
+        cand_pw = lines[2].replace("PASS:", "").replace("Pass:", "").strip()
+        if not any(bad in cand_u.lower() for bad in ["extinf", "tvg-", "group-", "http"]):
+            if not any(bad in cand_pw.lower() for bad in ["tvg-", "http", "group-"]):
+                p_line = urlparse(lines[0] if "://" in lines[0] else "http://" + lines[0])
+                if p_line.hostname and p_line.hostname.lower() not in ["url", "host", "server", "http"]:
+                    host = p_line.hostname
+                    port = str(p_line.port) if p_line.port else port
+                    user = cand_u
+                    pwd = cand_pw
 
     return host, port or "8080", user, pwd
 
