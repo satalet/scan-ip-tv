@@ -18,6 +18,14 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 COMMON_PORTS = [80, 443, 8000, 8080, 8880, 2082, 2086, 2095, 25461]
 
+# قائمة النماذج بالترتيب: رئيسي ثم الاحتياط الأول ثم الثاني
+AI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview"
+]
+
 def check_port(ip, port, timeout=1.8):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -44,19 +52,29 @@ def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
             "Clean the host from http:// or https://. The port should be an integer or string of digits."
         )
 
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                prompt
-            ]
-        )
+        last_error = None
+        for model_name in AI_MODELS:
+            try:
+                print(f"⏳ تجربة الاستخراج بواسطة النموذج: {model_name}...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                        prompt
+                    ]
+                )
+                raw_text = response.text.strip()
+                raw_text = re.sub(r'^```json\s*', '', raw_text)
+                raw_text = re.sub(r'\s*```$', '', raw_text)
+                data = json.loads(raw_text)
+                print(f"✅ نجح الاستخراج باستخدام: {model_name}")
+                return data, None
+            except Exception as e:
+                print(f"⚠️ فشل الموديل {model_name} بسبب: {e}، جاري تجربة الموديل البديل...")
+                last_error = str(e)
+                continue
 
-        raw_text = response.text.strip()
-        raw_text = re.sub(r'^```json\s*', '', raw_text)
-        raw_text = re.sub(r'\s*```$', '', raw_text)
-        data = json.loads(raw_text)
-        return data, None
+        return None, f"فشلت جميع النماذج الاحتياطية. آخر خطأ: {last_error}"
     except Exception as e:
         return None, str(e)
 
@@ -120,7 +138,12 @@ def verify_and_build_response(host, port, user, pwd):
 
 @app.route('/')
 def home():
-    return jsonify({"service": "Albasem-TV Engine", "status": "running", "ai": bool(os.environ.get("GEMINI_API_KEY"))})
+    return jsonify({
+        "service": "Albasem-TV Engine",
+        "status": "running",
+        "ai": bool(os.environ.get("GEMINI_API_KEY")),
+        "fallback_models": AI_MODELS
+    })
 
 @app.route('/api/ai-scan', methods=['POST'])
 def ai_scan():
@@ -141,7 +164,7 @@ def ai_scan():
 
     creds, err = extract_with_gemini(image_bytes, mime_type)
     if err or not creds:
-        return jsonify({"success": False, "message": f"فشل تحليل الذكاء الاصطناعي: {err}"}), 500
+        return jsonify({"success": False, "message": f"فشل استخراج الذكاء الاصطناعي: {err}"}), 500
 
     host = creds.get("host")
     port = creds.get("port", "8080")
@@ -149,7 +172,7 @@ def ai_scan():
     pwd = creds.get("pass")
 
     if not host or not user or not pwd:
-        return jsonify({"success": False, "message": "لم يستخرج الذكاء الاصطناعي بيانات كافية."}), 400
+        return jsonify({"success": False, "message": "البيانات المستخرجة من الصورة ناقصة."}), 400
 
     return verify_and_build_response(host, port, user, pwd)
 
