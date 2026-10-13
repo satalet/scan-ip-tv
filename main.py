@@ -95,8 +95,9 @@ def parse_m3u_stream(response_iterator):
     movies = []
     series = []
     current_item = None
-    line_count = 0
-    max_items = 1000
+    
+    # سقف مرن لكل فئة يضمن التنوع بدون استهلاك الذاكرة
+    MAX_PER_TAB = 3000
 
     for raw_line in response_iterator:
         try:
@@ -107,7 +108,6 @@ def parse_m3u_stream(response_iterator):
         if not line:
             continue
 
-        line_count += 1
         if line.startswith("#EXTINF:"):
             name_match = re.search(r',([^,]+)$', line)
             name = name_match.group(1).strip() if name_match else "قناة بدون اسم"
@@ -122,21 +122,23 @@ def parse_m3u_stream(response_iterator):
         elif current_item and not line.startswith("#"):
             current_item["url"] = line
             url_lower = line.lower()
+            grp_lower = current_item["group"].lower()
 
-            if "/series/" in url_lower:
-                if len(series) < max_items:
+            # تدقيق تصنيف المسلسلات والأفلام والمحطات
+            is_series = ("/series/" in url_lower) or any(k in grp_lower for k in ["series", "مسلسل", "موسم", "season"])
+            is_movie = ("/movie/" in url_lower) or url_lower.endswith((".mp4", ".mkv", ".avi")) or any(k in grp_lower for k in ["movie", "فلم", "فيلم", "افلام"])
+
+            if is_series:
+                if len(series) < MAX_PER_TAB:
                     series.append(current_item)
-            elif "/movie/" in url_lower or url_lower.endswith(".mp4") or url_lower.endswith(".mkv"):
-                if len(movies) < max_items:
+            elif is_movie:
+                if len(movies) < MAX_PER_TAB:
                     movies.append(current_item)
             else:
-                if len(live) < max_items:
+                if len(live) < MAX_PER_TAB:
                     live.append(current_item)
 
             current_item = None
-
-        if line_count > 40000:
-            break
 
     return {"live": live, "movies": movies, "series": series}
 
@@ -209,7 +211,6 @@ def home():
         "fallback_models": AI_MODELS
     })
 
-# مسار فحص النصوص والروابط المدخلة يدوياً
 @app.route('/api/check', methods=['POST', 'OPTIONS'])
 def check_text():
     if request.method == 'OPTIONS':
@@ -223,7 +224,6 @@ def check_text():
 
     host, port, user, pwd = None, 8080, None, None
 
-    # 1. إذا كان المدخل رابط M3U أو رابط مباشر
     if "http://" in text or "https://" in text:
         url_match = re.search(r'https?://[^\s]+', text)
         if url_match:
@@ -235,7 +235,6 @@ def check_text():
             if 'username' in qs: user = qs['username'][0]
             if 'password' in qs: pwd = qs['password'][0]
 
-    # 2. استخراج regex إذا كان نص عادي (Host/Port/User/Pass)
     if not (host and user and pwd):
         h_m = re.search(r'(?:host|server|سيرفر)[\s:=]+([a-zA-Z0-9.-]+)', text, re.I)
         p_m = re.search(r'(?:port|بورت)[\s:=]+(\d+)', text, re.I)
@@ -264,7 +263,7 @@ def parse_playlist():
 
     headers = {"User-Agent": "IPTVSmartersPro", "Accept": "*/*"}
     try:
-        r = requests.get(url, headers=headers, timeout=35, verify=False, stream=True)
+        r = requests.get(url, headers=headers, timeout=40, verify=False, stream=True)
         if r.status_code != 200:
             return jsonify({"success": False, "message": f"فشل مزود IPTV (كود {r.status_code})"}), 400
 
