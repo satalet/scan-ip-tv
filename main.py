@@ -8,7 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 import urllib3
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -24,6 +24,14 @@ AI_MODELS = [
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite-preview"
 ]
+
+# حقن ترويسات CORS في كل الاستجابات لضمان قبول المتصفح
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, x-goog-api-key'
+    return response
 
 def check_port(ip, port, timeout=1.8):
     try:
@@ -176,8 +184,10 @@ def verify_and_build_response(host, port, user, pwd):
     except Exception as e:
         return jsonify({"success": False, "message": f"فشل الاتصال بـ API: {str(e)}"})
 
-@app.route('/')
+@app.route('/', methods=['GET', 'OPTIONS'])
 def home():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
     return jsonify({
         "service": "Albasem-TV Engine",
         "status": "running",
@@ -185,8 +195,11 @@ def home():
         "fallback_models": AI_MODELS
     })
 
-@app.route('/api/parse', methods=['POST'])
+@app.route('/api/parse', methods=['POST', 'OPTIONS'])
 def parse_playlist():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+
     data = request.get_json(silent=True) or {}
     url = data.get("url") or request.args.get("url")
     if not url:
@@ -211,8 +224,11 @@ def parse_playlist():
     except Exception as e:
         return jsonify({"success": False, "message": f"تعذر جلب القائمة: {str(e)}"}), 500
 
-@app.route('/api/ai-scan', methods=['POST'])
+@app.route('/api/ai-scan', methods=['POST', 'OPTIONS'])
 def ai_scan():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+
     data = request.get_json(silent=True) or {}
     image_b64 = data.get("image", "")
     mime_type = data.get("mime_type", "image/jpeg")
