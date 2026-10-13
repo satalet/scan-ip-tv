@@ -1,5 +1,8 @@
 import os
 import re
+import socket
+import time
+from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 import urllib3
@@ -11,23 +14,143 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+COMMON_PORTS = [80, 443, 8000, 8080, 8880, 2082, 2086, 2095, 25461]
+
+def check_port(ip, port, timeout=1.5):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            return s.connect_ex((ip, port)) == 0
+    except:
+        return False
+
+def extract_credentials(text):
+    cleaned = re.sub(r':contentReference\[.*?\](?:\{.*?\})?', '', text).strip()
+    host, port, user, pwd = None, "8080", None, None
+
+    # مسار xtream
+    xtream_match = re.search(
+        r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})[/\s]+(?:live/|movie/|series/)?([a-zA-Z0-9_-]{3,35})[/\s]+([a-zA-Z0-9_-]{3,35})[/\s]+\d+',
+        cleaned, re.IGNORECASE
+    )
+    if xtream_match:
+        h, p, u, pw = xtream_match.groups()
+        if not any(bad in h.lower() for bad in ["images", "image", "logo", "web"]):
+            return h, p or "8080", u, pw
+
+    # استعلام get.php
+    query_match = re.search(
+        r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]*(\d{2,5})?/[^\s"\'<>]*?[?&]username=([^&\s"\'<>]+)&(?:amp;)?password=([^&\s"\'<>]+)',
+        cleaned, re.IGNORECASE
+    )
+    if query_match:
+        h, p, u, pw = query_match.groups()
+        if not any(bad in h.lower() for bad in ["images", "image", "logo"]):
+            return h, p or "8080", u, pw
+
+    # كروت السيرفرات (Host / User / Pass)
+    host_match = re.search(r'(?:Host(?:-Port)?|Server|URL|الدومين|السيرفر)\s*[:=]\s*(?:https?://)?([a-zA-Z0-9.-]+(?::\d+)?)', cleaned, re.IGNORECASE)
+    if host_match:
+        raw_hp = host_match.group(1).strip()
+        cand_host = raw_hp.split(':')[0]
+        if cand_host and cand_host.lower() not in ["url", "host", "server", "http", "https"]:
+            host = cand_host
+            if ":" in raw_hp:
+                p_part = raw_hp.split(":")[-1]
+                if p_part.isdigit(): port = p_part
+
+    if not host:
+        cand = re.search(r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})', cleaned, re.IGNORECASE)
+        if cand:
+            host, port = cand.group(1).strip(), cand.group(2).strip()
+
+    user_match = re.search(r'(?:User(?:name)?|Account|يوزر|المستخدم)\s*[:=]\s*([^&\s\r\n;]+)', cleaned, re.IGNORECASE)
+    if user_match: user = user_match.group(1).strip()
+
+    pass_match = re.search(r'(?:Pass(?:word)?|PWD|باسورد|المرور)\s*[:=]\s*([^&\s\r\n;]+)', cleaned, re.IGNORECASE)
+    if pass_match: pwd = pass_match.group(1).strip()
+
+    return host, port or "8080", user, pwd
+
 @app.route('/')
 def home():
     return jsonify({"service": "Albasem-TV Engine", "status": "running"})
 
-@app.route('/stream.m3u')
-def stream_m3u():
-    url = request.args.get('url', '')
-    name = request.args.get('name', 'Live Stream')
-    if not url:
-        return "رابط غير موجود", 400
+@app.route('/api/check', methods=['POST'])
+def check_server():
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    host = data.get("host")
+    port = data.get("port")
+    user = data.get("user")
+    pwd = data.get("pass")
 
-    content = f"#EXTM3U\n#EXTINF:-1,{name}\n{url}\n"
-    return Response(
-        content,
-        mimetype="audio/x-mpegurl",
-        headers={"Content-Disposition": f'inline; filename="stream.m3u"'}
-    )
+    if text and (not host or not user or not pwd):
+        h, p, u, pw = extract_credentials(text)
+        host = host or h
+        port = port or p
+        user = user or u
+        pwd = pwd or pw
+
+    if not host or not user or not pwd:
+        return jsonify({"success": False, "message": "لم يتم العثور على بيانات سيرفر كافية."}), 400
+
+    port = int(port) if str(port).isdigit() else 8080
+
+    try:
+        ip = socket.gethostbyname(host)
+    except Exception as e:
+        return jsonify({"success": False, "message": f"خطأ DNS: تعذر الوصول إلى الدومين ({host})"}), 400
+
+    working_port = port
+    if not check_port(ip, port):
+        found = [p for p in COMMON_PORTS if p != port and check_port(ip, p, 1.0)]
+        if found:
+            working_port = found[0]
+        else:
+            return jsonify({"success": False, "message": f"سيرفر {host} مغلق (المنفذ {port} لا يستجيب)"}), 400
+
+    protocol = "https" if working_port == 443 else "http"
+    base_url = f"{protocol}://{host}:{working_port}" if working_port not in [80, 443] else f"{protocol}://{host}"
+    api_url = f"{base_url}/player_api.php"
+    headers = {"User-Agent": "IPTVSmartersPro"}
+
+    try:
+        t0 = time.time()
+        res = requests.get(api_url, params={"username": user, "password": pwd}, headers=headers, timeout=6, verify=False)
+        latency = round((time.time() - t0) * 1000, 1)
+
+        if res.status_code == 200:
+            res_data = res.json()
+            user_info = res_data.get("user_info", {})
+            if user_info.get("auth", 0) == 1 or user_info.get("status") == "Active":
+                exp_date_raw = user_info.get("exp_date")
+                exp_date = "غير محدد"
+                if exp_date_raw:
+                    try:
+                        exp_date = datetime.fromtimestamp(int(exp_date_raw)).strftime('%Y-%m-%d')
+                    except: pass
+
+                full_m3u = f"{base_url}/get.php?username={user}&password={pwd}&type=m3u_plus&output=m3u8"
+                return jsonify({
+                    "success": True,
+                    "status": "Active",
+                    "host": host,
+                    "port": working_port,
+                    "user": user,
+                    "pass": pwd,
+                    "exp_date": exp_date,
+                    "latency": f"{latency} ms",
+                    "url": full_m3u
+                })
+            else:
+                return jsonify({"success": False, "message": "السيرفر متصل لكن الحساب ملغي أو كلمة المرور غير صحيحة."})
+        elif res.status_code == 404:
+            return jsonify({"success": False, "message": "الحساب منتهي الصلاحية أو تمويه 404."})
+        else:
+            return jsonify({"success": False, "message": f"رمز استجابة السيرفر: {res.status_code}"})
+    except Exception as e:
+        return jsonify({"success": False, "message": f"فشل الاتصال بـ API السيرفر: {str(e)}"})
 
 def fetch_category_map(api_url, user, pwd, action, headers):
     cat_map = {}
@@ -39,16 +162,14 @@ def fetch_category_map(api_url, user, pwd, action, headers):
                 c_name = c.get("category_name", "").strip()
                 if c_id and c_name:
                     cat_map[c_id] = c_name
-    except Exception:
-        pass
+    except: pass
     return cat_map
 
 @app.route('/api/parse', methods=['POST'])
 def parse_iptv():
     payload = request.get_json(silent=True) or {}
     url = payload.get("url", "").strip()
-    if not url:
-        return jsonify({"success": False, "message": "الرابط فارغ"}), 400
+    if not url: return jsonify({"success": False, "message": "الرابط فارغ"}), 400
 
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
@@ -113,8 +234,7 @@ def parse_iptv():
                     })
 
             return jsonify({"success": True, "data": result_data})
-        except Exception:
-            pass
+        except: pass
 
     try:
         r = requests.get(url, headers=headers, timeout=35, verify=False)
@@ -123,8 +243,7 @@ def parse_iptv():
         curr_item = None
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             if line.startswith("#EXTINF:"):
                 name_match = re.search(r',([^,]+)$', line)
                 name = name_match.group(1).strip() if name_match else "بدون اسم"
