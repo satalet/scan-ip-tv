@@ -8,7 +8,7 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 import urllib3
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -25,7 +25,6 @@ AI_MODELS = [
     "gemini-3.1-flash-lite-preview"
 ]
 
-# حقن ترويسات CORS في كل الاستجابات لضمان قبول المتصفح
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -82,19 +81,25 @@ def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
     except Exception as e:
         return None, str(e)
 
-def parse_m3u_content(content):
+def parse_m3u_stream(response_iterator):
     live = []
     movies = []
     series = []
 
-    lines = content.splitlines()
     current_item = None
+    line_count = 0
+    max_items_per_category = 1000  # حماية الذاكرة ومنع Crash السيرفر
 
-    for line in lines:
-        line = line.strip()
+    for raw_line in response_iterator:
+        try:
+            line = raw_line.decode('utf-8', errors='ignore').strip()
+        except:
+            continue
+
         if not line:
             continue
 
+        line_count += 1
         if line.startswith("#EXTINF:"):
             name_match = re.search(r',([^,]+)$', line)
             name = name_match.group(1).strip() if name_match else "قناة بدون اسم"
@@ -116,13 +121,20 @@ def parse_m3u_content(content):
             url_lower = line.lower()
 
             if "/series/" in url_lower:
-                series.append(current_item)
-            elif "/movie/" in url_lower:
-                movies.append(current_item)
+                if len(series) < max_items_per_category:
+                    series.append(current_item)
+            elif "/movie/" in url_lower or url_lower.endswith(".mp4") or url_lower.endswith(".mkv"):
+                if len(movies) < max_items_per_category:
+                    movies.append(current_item)
             else:
-                live.append(current_item)
+                if len(live) < max_items_per_category:
+                    live.append(current_item)
 
             current_item = None
+
+        # سقف أمان للأداء في الاستضافة المجانية
+        if line_count > 40000:
+            break
 
     return {"live": live, "movies": movies, "series": series}
 
@@ -211,16 +223,18 @@ def parse_playlist():
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=12, verify=False)
+        # استخدام stream=True لمنع تحميل الملف كاملاً في RAM دفعة واحدة
+        r = requests.get(url, headers=headers, timeout=15, verify=False, stream=True)
         if r.status_code != 200:
-            return jsonify({"success": False, "message": f"فشل تحميل القائمة، كود الحالة: {r.status_code}"}), 400
+            return jsonify({"success": False, "message": f"فشل مزود IPTV في إرجاع القائمة (كود {r.status_code})"}), 400
 
-        r.encoding = 'utf-8'
-        parsed_data = parse_m3u_content(r.text)
+        parsed_data = parse_m3u_stream(r.iter_lines())
         return jsonify({
             "success": True,
             "data": parsed_data
         })
+    except requests.exceptions.Timeout:
+        return jsonify({"success": False, "message": "انتهت مهلة الاتصال مع سيرفر الـ IPTV الأصلي (بطيء أو لا يستجيب)."}), 504
     except Exception as e:
         return jsonify({"success": False, "message": f"تعذر جلب القائمة: {str(e)}"}), 500
 
