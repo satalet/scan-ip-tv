@@ -95,9 +95,7 @@ def parse_m3u_stream(response_iterator):
     movies = []
     series = []
     current_item = None
-    
-    # سقف مرن لكل فئة يضمن التنوع بدون استهلاك الذاكرة
-    MAX_PER_TAB = 3000
+    MAX_PER_TAB = 2500
 
     for raw_line in response_iterator:
         try:
@@ -109,14 +107,24 @@ def parse_m3u_stream(response_iterator):
             continue
 
         if line.startswith("#EXTINF:"):
-            name_match = re.search(r',([^,]+)$', line)
-            name = name_match.group(1).strip() if name_match else "قناة بدون اسم"
+            comma_idx = line.rfind(',')
+            name = line[comma_idx + 1:].strip() if comma_idx != -1 else "قناة بدون اسم"
 
-            group_match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
-            group = group_match.group(1).strip() if group_match else "عام"
+            group = "عام"
+            if 'group-title="' in line:
+                s = line.split('group-title="', 1)[1]
+                group = s.split('"', 1)[0].strip() or "عام"
+            elif "group-title='" in line:
+                s = line.split("group-title='", 1)[1]
+                group = s.split("'", 1)[0].strip() or "عام"
 
-            logo_match = re.search(r'tvg-logo="([^"]+)"', line, re.IGNORECASE)
-            logo = logo_match.group(1).strip() if logo_match else ""
+            logo = ""
+            if 'tvg-logo="' in line:
+                s = line.split('tvg-logo="', 1)[1]
+                logo = s.split('"', 1)[0].strip()
+            elif "tvg-logo='" in line:
+                s = line.split("tvg-logo='", 1)[1]
+                logo = s.split("'", 1)[0].strip()
 
             current_item = {"name": name, "group": group, "logo": logo, "url": ""}
         elif current_item and not line.startswith("#"):
@@ -124,9 +132,8 @@ def parse_m3u_stream(response_iterator):
             url_lower = line.lower()
             grp_lower = current_item["group"].lower()
 
-            # تدقيق تصنيف المسلسلات والأفلام والمحطات
-            is_series = ("/series/" in url_lower) or any(k in grp_lower for k in ["series", "مسلسل", "موسم", "season"])
-            is_movie = ("/movie/" in url_lower) or url_lower.endswith((".mp4", ".mkv", ".avi")) or any(k in grp_lower for k in ["movie", "فلم", "فيلم", "افلام"])
+            is_series = ("/series/" in url_lower) or ("series" in grp_lower) or ("مسلسل" in grp_lower) or ("season" in grp_lower)
+            is_movie = ("/movie/" in url_lower) or url_lower.endswith((".mp4", ".mkv", ".avi")) or ("movie" in grp_lower) or ("فلم" in grp_lower) or ("فيلم" in grp_lower)
 
             if is_series:
                 if len(series) < MAX_PER_TAB:
@@ -263,7 +270,7 @@ def parse_playlist():
 
     headers = {"User-Agent": "IPTVSmartersPro", "Accept": "*/*"}
     try:
-        r = requests.get(url, headers=headers, timeout=40, verify=False, stream=True)
+        r = requests.get(url, headers=headers, timeout=60, verify=False, stream=True)
         if r.status_code != 200:
             return jsonify({"success": False, "message": f"فشل مزود IPTV (كود {r.status_code})"}), 400
 
