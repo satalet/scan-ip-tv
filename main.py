@@ -209,6 +209,49 @@ def home():
         "fallback_models": AI_MODELS
     })
 
+# مسار فحص النصوص والروابط المدخلة يدوياً
+@app.route('/api/check', methods=['POST', 'OPTIONS'])
+def check_text():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({"success": False, "message": "لم يتم إرسال نص للفحص."}), 400
+
+    host, port, user, pwd = None, 8080, None, None
+
+    # 1. إذا كان المدخل رابط M3U أو رابط مباشر
+    if "http://" in text or "https://" in text:
+        url_match = re.search(r'https?://[^\s]+', text)
+        if url_match:
+            full_url = url_match.group(0)
+            parsed = urlparse(full_url)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            qs = parse_qs(parsed.query)
+            if 'username' in qs: user = qs['username'][0]
+            if 'password' in qs: pwd = qs['password'][0]
+
+    # 2. استخراج regex إذا كان نص عادي (Host/Port/User/Pass)
+    if not (host and user and pwd):
+        h_m = re.search(r'(?:host|server|سيرفر)[\s:=]+([a-zA-Z0-9.-]+)', text, re.I)
+        p_m = re.search(r'(?:port|بورت)[\s:=]+(\d+)', text, re.I)
+        u_m = re.search(r'(?:user|username|مستخدم)[\s:=]+([a-zA-Z0-9._-]+)', text, re.I)
+        w_m = re.search(r'(?:pass|password|مرور)[\s:=]+([a-zA-Z0-9._-]+)', text, re.I)
+
+        if h_m: host = h_m.group(1)
+        if p_m: port = int(p_m.group(1))
+        if u_m: user = u_m.group(1)
+        if w_m: pwd = w_m.group(1)
+
+    if not host or not user or not pwd:
+        return jsonify({"success": False, "message": "تعذر استخراج بيانات الاشتراك (Host/User/Pass) من النص المدخل."}), 400
+
+    return verify_and_build_response(host, port, user, pwd)
+
 @app.route('/api/parse', methods=['POST', 'OPTIONS'])
 def parse_playlist():
     if request.method == 'OPTIONS':
