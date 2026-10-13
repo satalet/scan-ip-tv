@@ -8,17 +8,18 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 import urllib3
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
+# السماح لجميع المسارات بتجاوز حظر المتصفح CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 COMMON_PORTS = [80, 443, 8000, 8080, 8880, 2082, 2086, 2095, 25461]
 
-# قائمة النماذج بالترتيب: رئيسي ثم الاحتياط الأول ثم الثاني
+# قائمة النماذج الاحتياطية بالترتيب
 AI_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
@@ -55,7 +56,6 @@ def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
         last_error = None
         for model_name in AI_MODELS:
             try:
-                print(f"⏳ تجربة الاستخراج بواسطة النموذج: {model_name}...")
                 response = client.models.generate_content(
                     model=model_name,
                     contents=[
@@ -67,14 +67,12 @@ def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
                 raw_text = re.sub(r'^```json\s*', '', raw_text)
                 raw_text = re.sub(r'\s*```$', '', raw_text)
                 data = json.loads(raw_text)
-                print(f"✅ نجح الاستخراج باستخدام: {model_name}")
                 return data, None
             except Exception as e:
-                print(f"⚠️ فشل الموديل {model_name} بسبب: {e}، جاري تجربة الموديل البديل...")
                 last_error = str(e)
                 continue
 
-        return None, f"فشلت جميع النماذج الاحتياطية. آخر خطأ: {last_error}"
+        return None, f"فشلت جميع النماذج الاحتياطية: {last_error}"
     except Exception as e:
         return None, str(e)
 
@@ -144,6 +142,29 @@ def home():
         "ai": bool(os.environ.get("GEMINI_API_KEY")),
         "fallback_models": AI_MODELS
     })
+
+# المسار الخاص بجلب وتشغيل روابط وقوائم M3U وتجاوز قيود CORS للمتصفح
+@app.route('/api/parse', methods=['POST', 'OPTIONS'])
+def parse_playlist():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+
+    data = request.get_json(silent=True) or {}
+    url = data.get("url") or request.args.get("url")
+    if not url:
+        return jsonify({"error": "يرجى تزويد رابط التشغيل (url)"}), 400
+
+    headers = {
+        "User-Agent": "IPTVSmartersPro",
+        "Accept": "*/*"
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=12, verify=False, stream=True)
+        r.encoding = 'utf-8'
+        return Response(r.text, status=r.status_code, content_type='text/plain; charset=utf-8')
+    except Exception as e:
+        return jsonify({"error": f"تعذر جلب القائمة: {str(e)}"}), 500
 
 @app.route('/api/ai-scan', methods=['POST'])
 def ai_scan():
