@@ -8,18 +8,16 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 import urllib3
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-# السماح لجميع المسارات بتجاوز حظر المتصفح CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 COMMON_PORTS = [80, 443, 8000, 8080, 8880, 2082, 2086, 2095, 25461]
 
-# قائمة النماذج الاحتياطية بالترتيب
 AI_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
@@ -75,6 +73,50 @@ def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
         return None, f"فشلت جميع النماذج الاحتياطية: {last_error}"
     except Exception as e:
         return None, str(e)
+
+def parse_m3u_content(content):
+    live = []
+    movies = []
+    series = []
+
+    lines = content.splitlines()
+    current_item = None
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("#EXTINF:"):
+            name_match = re.search(r',([^,]+)$', line)
+            name = name_match.group(1).strip() if name_match else "قناة بدون اسم"
+
+            group_match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
+            group = group_match.group(1).strip() if group_match else "عام"
+
+            logo_match = re.search(r'tvg-logo="([^"]+)"', line, re.IGNORECASE)
+            logo = logo_match.group(1).strip() if logo_match else ""
+
+            current_item = {
+                "name": name,
+                "group": group,
+                "logo": logo,
+                "url": ""
+            }
+        elif current_item and not line.startswith("#"):
+            current_item["url"] = line
+            url_lower = line.lower()
+
+            if "/series/" in url_lower:
+                series.append(current_item)
+            elif "/movie/" in url_lower:
+                movies.append(current_item)
+            else:
+                live.append(current_item)
+
+            current_item = None
+
+    return {"live": live, "movies": movies, "series": series}
 
 def verify_and_build_response(host, port, user, pwd):
     port = int(port) if str(port).isdigit() else 8080
@@ -143,16 +185,12 @@ def home():
         "fallback_models": AI_MODELS
     })
 
-# المسار الخاص بجلب وتشغيل روابط وقوائم M3U وتجاوز قيود CORS للمتصفح
-@app.route('/api/parse', methods=['POST', 'OPTIONS'])
+@app.route('/api/parse', methods=['POST'])
 def parse_playlist():
-    if request.method == 'OPTIONS':
-        return jsonify({"status": "ok"}), 200
-
     data = request.get_json(silent=True) or {}
     url = data.get("url") or request.args.get("url")
     if not url:
-        return jsonify({"error": "يرجى تزويد رابط التشغيل (url)"}), 400
+        return jsonify({"success": False, "message": "يرجى تزويد رابط التشغيل (url)"}), 400
 
     headers = {
         "User-Agent": "IPTVSmartersPro",
@@ -160,11 +198,18 @@ def parse_playlist():
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=12, verify=False, stream=True)
+        r = requests.get(url, headers=headers, timeout=12, verify=False)
+        if r.status_code != 200:
+            return jsonify({"success": False, "message": f"فشل تحميل القائمة، كود الحالة: {r.status_code}"}), 400
+
         r.encoding = 'utf-8'
-        return Response(r.text, status=r.status_code, content_type='text/plain; charset=utf-8')
+        parsed_data = parse_m3u_content(r.text)
+        return jsonify({
+            "success": True,
+            "data": parsed_data
+        })
     except Exception as e:
-        return jsonify({"error": f"تعذر جلب القائمة: {str(e)}"}), 500
+        return jsonify({"success": False, "message": f"تعذر جلب القائمة: {str(e)}"}), 500
 
 @app.route('/api/ai-scan', methods=['POST'])
 def ai_scan():
