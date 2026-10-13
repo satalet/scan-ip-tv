@@ -40,55 +40,63 @@ def check_port(ip, port, timeout=1.8):
     except:
         return False
 
-def extract_with_gemini(image_bytes, mime_type="image/jpeg"):
+def extract_with_gemini_rest(image_b64, mime_type="image/jpeg"):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None, "GEMINI_API_KEY غير موجود في السيرفر."
 
-    try:
-        from google import genai
-        from google.genai import types
+    prompt = (
+        "Extract IPTV credentials from this image. "
+        "Return ONLY a raw JSON object with keys: 'host', 'port', 'user', 'pass'. "
+        "Do not include markdown blocks, notes, or backticks. "
+        "Example format: {\"host\":\"domain.com\",\"port\":8080,\"user\":\"username\",\"pass\":\"password\"}. "
+        "Clean the host from http:// or https://. The port should be an integer or string of digits."
+    )
 
-        client = genai.Client(api_key=api_key)
-        prompt = (
-            "Extract IPTV credentials from this image. "
-            "Return ONLY a raw JSON object with keys: 'host', 'port', 'user', 'pass'. "
-            "Do not include markdown blocks, notes, or backticks. "
-            "Example format: {\"host\":\"domain.com\",\"port\":8080,\"user\":\"username\",\"pass\":\"password\"}. "
-            "Clean the host from http:// or https://. The port should be an integer or string of digits."
-        )
+    payload = {
+        "contents": [{
+            "parts": [
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": image_b64
+                    }
+                },
+                {"text": prompt}
+            ]
+        }]
+    }
 
-        last_error = None
-        for model_name in AI_MODELS:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[
-                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                        prompt
-                    ]
-                )
-                raw_text = response.text.strip()
+    last_error = None
+    for model_name in AI_MODELS:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+            res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=12)
+            res_json = res.json()
+
+            if res.status_code == 200:
+                raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
                 raw_text = re.sub(r'^```json\s*', '', raw_text)
                 raw_text = re.sub(r'\s*```$', '', raw_text)
                 data = json.loads(raw_text)
                 return data, None
-            except Exception as e:
-                last_error = str(e)
+            else:
+                err_msg = res_json.get("error", {}).get("message", f"Status {res.status_code}")
+                last_error = f"{model_name}: {err_msg}"
                 continue
+        except Exception as e:
+            last_error = f"{model_name}: {str(e)}"
+            continue
 
-        return None, f"فشلت جميع النماذج الاحتياطية: {last_error}"
-    except Exception as e:
-        return None, str(e)
+    return None, f"فشلت جميع النماذج الاحتياطية: {last_error}"
 
 def parse_m3u_stream(response_iterator):
     live = []
     movies = []
     series = []
-
     current_item = None
     line_count = 0
-    max_items_per_category = 1000  # حماية الذاكرة ومنع Crash السيرفر
+    max_items = 1000
 
     for raw_line in response_iterator:
         try:
@@ -110,29 +118,23 @@ def parse_m3u_stream(response_iterator):
             logo_match = re.search(r'tvg-logo="([^"]+)"', line, re.IGNORECASE)
             logo = logo_match.group(1).strip() if logo_match else ""
 
-            current_item = {
-                "name": name,
-                "group": group,
-                "logo": logo,
-                "url": ""
-            }
+            current_item = {"name": name, "group": group, "logo": logo, "url": ""}
         elif current_item and not line.startswith("#"):
             current_item["url"] = line
             url_lower = line.lower()
 
             if "/series/" in url_lower:
-                if len(series) < max_items_per_category:
+                if len(series) < max_items:
                     series.append(current_item)
             elif "/movie/" in url_lower or url_lower.endswith(".mp4") or url_lower.endswith(".mkv"):
-                if len(movies) < max_items_per_category:
+                if len(movies) < max_items:
                     movies.append(current_item)
             else:
-                if len(live) < max_items_per_category:
+                if len(live) < max_items:
                     live.append(current_item)
 
             current_item = None
 
-        # سقف أمان للأداء في الاستضافة المجانية
         if line_count > 40000:
             break
 
@@ -217,24 +219,14 @@ def parse_playlist():
     if not url:
         return jsonify({"success": False, "message": "يرجى تزويد رابط التشغيل (url)"}), 400
 
-    headers = {
-        "User-Agent": "IPTVSmartersPro",
-        "Accept": "*/*"
-    }
-
+    headers = {"User-Agent": "IPTVSmartersPro", "Accept": "*/*"}
     try:
-        # استخدام stream=True لمنع تحميل الملف كاملاً في RAM دفعة واحدة
         r = requests.get(url, headers=headers, timeout=15, verify=False, stream=True)
         if r.status_code != 200:
-            return jsonify({"success": False, "message": f"فشل مزود IPTV في إرجاع القائمة (كود {r.status_code})"}), 400
+            return jsonify({"success": False, "message": f"فشل مزود IPTV (كود {r.status_code})"}), 400
 
         parsed_data = parse_m3u_stream(r.iter_lines())
-        return jsonify({
-            "success": True,
-            "data": parsed_data
-        })
-    except requests.exceptions.Timeout:
-        return jsonify({"success": False, "message": "انتهت مهلة الاتصال مع سيرفر الـ IPTV الأصلي (بطيء أو لا يستجيب)."}), 504
+        return jsonify({"success": True, "data": parsed_data})
     except Exception as e:
         return jsonify({"success": False, "message": f"تعذر جلب القائمة: {str(e)}"}), 500
 
@@ -253,12 +245,7 @@ def ai_scan():
     if "," in image_b64:
         image_b64 = image_b64.split(",")[1]
 
-    try:
-        image_bytes = base64.b64decode(image_b64)
-    except Exception:
-        return jsonify({"success": False, "message": "تنسيق الصورة غير صالح."}), 400
-
-    creds, err = extract_with_gemini(image_bytes, mime_type)
+    creds, err = extract_with_gemini_rest(image_b64, mime_type)
     if err or not creds:
         return jsonify({"success": False, "message": f"فشل استخراج الذكاء الاصطناعي: {err}"}), 500
 
