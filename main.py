@@ -16,7 +16,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 COMMON_PORTS = [80, 443, 8000, 8080, 8880, 2082, 2086, 2095, 25461]
 
-def check_port(ip, port, timeout=1.5):
+def check_port(ip, port, timeout=1.8):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
@@ -28,61 +28,62 @@ def extract_credentials(text):
     cleaned = re.sub(r':contentReference\[.*?\](?:\{.*?\})?', '', text).strip()
     host, port, user, pwd = None, "8080", None, None
 
-    # 1. روابط الستريم المباشرة Xtream
-    xtream_match = re.search(
-        r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})[/\s]+(?:live/|movie/|series/)?([a-zA-Z0-9_-]{3,35})[/\s]+([a-zA-Z0-9_-]{3,35})[/\s]+\d+',
+    # 1. البحث عن دومين حقيقي مع بورت (مثل fixtv123.xyz:2095)
+    domain_match = re.search(
+        r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})',
         cleaned, re.IGNORECASE
     )
-    if xtream_match:
-        h, p, u, pw = xtream_match.groups()
-        if not any(bad in h.lower() for bad in ["images", "image", "logo", "web"]):
-            return h, p or "8080", u, pw
+    if domain_match:
+        cand_h = domain_match.group(1).strip()
+        # استبعاد الكلمات العامة واللوجوهات
+        if not any(bad in cand_h.lower() for bad in ["image", "logo", "google", "facebook", "application"]):
+            host = cand_h
+            port = domain_match.group(2).strip()
 
-    # 2. روابط get.php
-    query_match = re.search(
-        r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]*(\d{2,5})?/[^\s"\'<>]*?[?&]username=([^&\s"\'<>]+)&(?:amp;)?password=([^&\s"\'<>]+)',
-        cleaned, re.IGNORECASE
-    )
-    if query_match:
-        h, p, u, pw = query_match.groups()
-        if not any(bad in h.lower() for bad in ["images", "image", "logo"]):
-            return h, p or "8080", u, pw
-
-    # 3. استخراج بحسب الكلمات المفتاحية (Host / User / Pass)
-    host_match = re.search(r'(?:Host(?:-Port)?|Server|URL|الدومين|السيرفر)\s*[:=]\s*(?:https?://)?([a-zA-Z0-9.-]+(?::\d+)?)', cleaned, re.IGNORECASE)
-    if host_match:
-        raw_hp = host_match.group(1).strip()
-        cand_host = raw_hp.split(':')[0]
-        if cand_host and cand_host.lower() not in ["url", "host", "server", "http", "https"]:
-            host = cand_host
-            if ":" in raw_hp:
-                p_part = raw_hp.split(":")[-1]
-                if p_part.isdigit(): port = p_part
-
-    if not host:
-        cand = re.search(r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})', cleaned, re.IGNORECASE)
-        if cand:
-            host, port = cand.group(1).strip(), cand.group(2).strip()
-
-    user_match = re.search(r'(?:User(?:name)?|Account|يوزر|المستخدم)\s*[:=]\s*([^&\s\r\n;]+)', cleaned, re.IGNORECASE)
+    # 2. البحث بنمط مفاتيح (Host / User / Pass)
+    user_match = re.search(r'(?:User(?:name)?|Account|يوزر|المستخدم)\s*[:=]\s*([a-zA-Z0-9_-]{3,35})', cleaned, re.IGNORECASE)
     if user_match: user = user_match.group(1).strip()
 
-    pass_match = re.search(r'(?:Pass(?:word)?|PWD|باسورد|المرور)\s*[:=]\s*([^&\s\r\n;]+)', cleaned, re.IGNORECASE)
+    pass_match = re.search(r'(?:Pass(?:word)?|PWD|باسورد|المرور)\s*[:=]\s*([a-zA-Z0-9_-]{3,35})', cleaned, re.IGNORECASE)
     if pass_match: pwd = pass_match.group(1).strip()
 
-    # 4. الاستخراج الذكي من 3 أسطر متتالية (بدون كلمات مفتاحية)
-    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-    if (not user or not pwd) and len(lines) >= 3:
-        cand_u = lines[1].replace("USER:", "").replace("User:", "").strip()
-        cand_pw = lines[2].replace("PASS:", "").replace("Pass:", "").strip()
-        if not any(bad in cand_u.lower() for bad in ["extinf", "tvg-", "group-", "http"]):
-            if not any(bad in cand_pw.lower() for bad in ["tvg-", "http", "group-"]):
-                p_line = urlparse(lines[0] if "://" in lines[0] else "http://" + lines[0])
-                if p_line.hostname and p_line.hostname.lower() not in ["url", "host", "server", "http"]:
-                    host = p_line.hostname
-                    port = str(p_line.port) if p_line.port else port
-                    user = cand_u
-                    pwd = cand_pw
+    # 3. إذا لم تكن هناك مفاتيح صريحة: استخراج الكلمات/الأكواد التي تلي رابط السيرفر
+    if host and (not user or not pwd):
+        lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+        host_line_idx = -1
+        for idx, line in enumerate(lines):
+            if host in line:
+                host_line_idx = idx
+                break
+
+        if host_line_idx != -1:
+            candidates = []
+            for l in lines[host_line_idx + 1:]:
+                # استخراج المعرفات المكونة من أحرف وأرقام مع استبعاد كلمات الواجهة
+                words = re.findall(r'[a-zA-Z0-9_-]{4,35}', l)
+                for w in words:
+                    w_lower = w.lower()
+                    if not any(ign in w_lowerプロセス for ign in [
+                        "expire", "expires", "date", "http", "live", "movie",
+                        "series", "stream", "xtream", "application", "zohir", "hamazo"
+                    ]):
+                        candidates.append(w)
+            
+            if len(candidates) >= 1 and not user:
+                user = candidates[0]
+            if len(candidates) >= 2 and not pwd:
+                pwd = candidates[1]
+
+    # 4. مسار روابط Xtream الجاهزة
+    if not host or not user or not pwd:
+        xtream_match = re.search(
+            r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,10})[:\s]+(\d{2,5})[/\s]+(?:live/|movie/|series/)?([a-zA-Z0-9_-]{3,35})[/\s]+([a-zA-Z0-9_-]{3,35})[/\s]+\d+',
+            cleaned, re.IGNORECASE
+        )
+        if xtream_match:
+            h, p, u, pw = xtream_match.groups()
+            if not any(bad in h.lower() for bad in ["images", "image", "logo"]):
+                host, port, user, pwd = h, p or "8080", u, pw
 
     return host, port or "8080", user, pwd
 
@@ -118,11 +119,11 @@ def check_server():
 
     working_port = port
     if not check_port(ip, port):
-        found = [p for p in COMMON_PORTS if p != port and check_port(ip, p, 1.0)]
+        found = [p for p in COMMON_PORTS if p != port and check_port(ip, p, 1.2)]
         if found:
             working_port = found[0]
         else:
-            return jsonify({"success": False, "message": f"سيرفر {host} مغلق (المنفذ {port} لا يستجيب)"}), 400
+            return jsonify({"success": False, "message": f"السيرفر {host} مغلق (المنفذ {port} لا يستجيب)"}), 400
 
     protocol = "https" if working_port == 443 else "http"
     base_url = f"{protocol}://{host}:{working_port}" if working_port not in [80, 443] else f"{protocol}://{host}"
@@ -158,13 +159,13 @@ def check_server():
                     "url": full_m3u
                 })
             else:
-                return jsonify({"success": False, "message": "السيرفر متصل لكن الحساب ملغي أو كلمة المرور غير صحيحة."})
+                return jsonify({"success": False, "message": "السيرفر متصل ولكن الحساب غير فعال أو كلمة المرور خطأ."})
         elif res.status_code == 404:
             return jsonify({"success": False, "message": "الحساب منتهي الصلاحية أو تمويه 404."})
         else:
-            return jsonify({"success": False, "message": f"رمز استجابة السيرفر: {res.status_code}"})
+            return jsonify({"success": False, "message": f"رمز الاستجابة: {res.status_code}"})
     except Exception as e:
-        return jsonify({"success": False, "message": f"فشل الاتصال بـ API السيرفر: {str(e)}"})
+        return jsonify({"success": False, "message": f"فشل الاتصال بـ API: {str(e)}"})
 
 def fetch_category_map(api_url, user, pwd, action, headers):
     cat_map = {}
