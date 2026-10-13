@@ -264,7 +264,7 @@ def parse_playlist():
 
     headers = {"User-Agent": "IPTVSmartersPro", "Accept": "*/*"}
     try:
-        r = requests.get(url, headers=headers, timeout=15, verify=False, stream=True)
+        r = requests.get(url, headers=headers, timeout=35, verify=False, stream=True)
         if r.status_code != 200:
             return jsonify({"success": False, "message": f"فشل مزود IPTV (كود {r.status_code})"}), 400
 
