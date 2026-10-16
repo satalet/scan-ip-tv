@@ -360,3 +360,110 @@ def ai_scan():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
+
+# ==========================================
+# 🔗 نظام تخزين وفحص الروابط الذكي (Links Hub)
+# ==========================================
+import json
+from concurrent.futures import ThreadPoolExecutor
+
+LINKS_FILE = os.path.join(os.path.dirname(__file__), "links.json")
+
+def load_saved_links():
+    if not os.path.exists(LINKS_FILE):
+        return []
+    try:
+        with open(LINKS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_links_data(links):
+    try:
+        with open(LINKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(links, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+@app.route("/api/links", methods=["GET"])
+def get_links():
+    return jsonify(load_saved_links())
+
+@app.route("/api/links", methods=["POST"])
+def add_link():
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    title = data.get("title", "").strip() or "قناة / سيرفر بدون عنوان"
+    source = data.get("source", "manual") # "manual" أو "auto_scan"
+
+    if not url:
+        return jsonify({"error": "الرابط مطلوب"}), 400
+
+    links = load_saved_links()
+    
+    # التحقق من عدم التكرار
+    for item in links:
+        if item.get("url") == url:
+            item["title"] = title
+            item["last_seen"] = request.date or ""
+            save_links_data(links)
+            return jsonify({"status": "updated", "message": "تم تحديث الرابط بنجاح", "item": item})
+
+    new_item = {
+        "id": os.urandom(4).hex(),
+        "url": url,
+        "title": title,
+        "source": source,
+        "status": "online" if source == "auto_scan" else "unchecked",
+        "added_at": ""
+    }
+    links.insert(0, new_item)
+    save_links_data(links)
+    return jsonify({"status": "added", "item": new_item})
+
+@app.route("/api/links", methods=["DELETE"])
+def delete_link():
+    data = request.get_json(silent=True) or {}
+    target_id = data.get("id")
+    clear_dead = data.get("clear_dead", False)
+
+    links = load_saved_links()
+    if clear_dead:
+        links = [l for l in links if l.get("status") != "dead"]
+    elif target_id:
+        links = [l for l in links if l.get("id") != target_id]
+    else:
+        return jsonify({"error": "معرف الرابط غير محدد"}), 400
+
+    save_links_data(links)
+    return jsonify({"status": "deleted", "remaining": len(links)})
+
+def check_single_url(item):
+    url = item.get("url", "")
+    test_headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}
+    try:
+        r = requests.head(url, headers=test_headers, timeout=5, allow_redirects=True, verify=False)
+        if r.status_code in [200, 206, 301, 302]:
+            item["status"] = "online"
+        else:
+            # محاولة أخيرة بـ GET خفيف في حال كان السيرفر يرفض طلبات HEAD
+            rg = requests.get(url, headers=test_headers, timeout=5, stream=True, verify=False)
+            item["status"] = "online" if rg.status_code in [200, 206] else "dead"
+            rg.close()
+    except Exception:
+        item["status"] = "dead"
+    return item
+
+@app.route("/api/links/check", methods=["POST"])
+def check_all_links():
+    links = load_saved_links()
+    if not links:
+        return jsonify([])
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        checked_links = list(executor.map(check_single_url, links))
+
+    save_links_data(checked_links)
+    return jsonify(checked_links)
