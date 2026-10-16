@@ -261,6 +261,7 @@ def check_text():
 
 @app.route("/api/proxy")
 def stream_proxy():
+    from urllib.parse import urlparse, quote
     target_url = request.args.get("url")
     if not target_url:
         return "Missing URL", 400
