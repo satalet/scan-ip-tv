@@ -266,7 +266,7 @@ def stream_proxy():
     if not target_url:
         return "Missing URL", 400
 
-    headers = {"User-Agent": "IPTVSmartersPro"}
+    headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}
     try:
         req = requests.get(target_url, headers=headers, stream=True, timeout=15, verify=False)
         content_type = req.headers.get("Content-Type", "")
@@ -286,7 +286,8 @@ def stream_proxy():
                         full_ts = base_domain + l
                     else:
                         full_ts = parent_path + "/" + l
-                    rewritten.append(f"https://scan-ip-tv.onrender.com/api/proxy?url={quote(full_ts, safe="")}")
+                    enc_ts = quote(full_ts, safe="")
+                    rewritten.append(f"https://scan-ip-tv.onrender.com/api/proxy?url={enc_ts}")
                 else:
                     rewritten.append(l)
 
@@ -316,7 +317,7 @@ def parse_playlist():
     if not url:
         return jsonify({"success": False, "message": "يرجى تزويد رابط التشغيل (url)"}), 400
 
-    headers = {"User-Agent": "IPTVSmartersPro", "Accept": "*/*"}
+    headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}
     try:
         r = requests.get(url, headers=headers, timeout=60, verify=False, stream=True)
         if r.status_code != 200:
