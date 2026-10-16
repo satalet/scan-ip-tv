@@ -258,6 +258,27 @@ def check_text():
 
     return verify_and_build_response(host, port, user, pwd)
 
+
+@app.route("/api/proxy")
+def stream_proxy():
+    target_url = request.args.get("url")
+    if not target_url:
+        return "Missing URL", 400
+    
+    headers = {"User-Agent": "IPTVSmartersPro"}
+    try:
+        req = requests.get(target_url, headers=headers, stream=True, timeout=15, verify=False)
+        def generate():
+            for chunk in req.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
+        resp = app.response_class(generate(), status=req.status_code, content_type=req.headers.get("Content-Type", "application/vnd.apple.mpegurl"))
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception as e:
+        return f"Proxy Error: {str(e)}", 500
+
 @app.route('/api/parse', methods=['POST', 'OPTIONS'])
 def parse_playlist():
     if request.method == 'OPTIONS':
