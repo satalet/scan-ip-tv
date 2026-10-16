@@ -168,7 +168,7 @@ def verify_and_build_response(host, port, user, pwd):
     protocol = "https" if working_port == 443 else "http"
     base_url = f"{protocol}://{host}:{working_port}" if working_port not in [80, 443] else f"{protocol}://{host}"
     api_url = f"{base_url}/player_api.php"
-    headers = {"User-Agent": "IPTVSmartersPro"}
+    headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}
 
     t0 = time.time()
     try:
