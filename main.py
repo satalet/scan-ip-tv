@@ -264,20 +264,46 @@ def stream_proxy():
     target_url = request.args.get("url")
     if not target_url:
         return "Missing URL", 400
-    
+
     headers = {"User-Agent": "IPTVSmartersPro"}
     try:
         req = requests.get(target_url, headers=headers, stream=True, timeout=15, verify=False)
+        content_type = req.headers.get("Content-Type", "")
+
+        if "mpegurl" in content_type or target_url.endswith(".m3u8") or ".m3u8?" in target_url:
+            parsed = urlparse(target_url)
+            base_domain = f"{parsed.scheme}://{parsed.netloc}"
+            parent_path = target_url.rsplit("/", 1)[0]
+
+            rewritten = []
+            for raw_l in req.text.splitlines():
+                l = raw_l.strip()
+                if l and not l.startswith("#"):
+                    if l.startswith("http://") or l.startswith("https://"):
+                        full_ts = l
+                    elif l.startswith("/"):
+                        full_ts = base_domain + l
+                    else:
+                        full_ts = parent_path + "/" + l
+                    rewritten.append(f"https://scan-ip-tv.onrender.com/api/proxy?url={quote(full_ts, safe="")}")
+                else:
+                    rewritten.append(l)
+
+            resp = app.response_class("\n".join(rewritten), status=200, content_type="application/vnd.apple.mpegurl")
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+
         def generate():
-            for chunk in req.iter_content(chunk_size=8192):
+            for chunk in req.iter_content(chunk_size=16384):
                 if chunk:
                     yield chunk
-        
-        resp = app.response_class(generate(), status=req.status_code, content_type=req.headers.get("Content-Type", "application/vnd.apple.mpegurl"))
+
+        resp = app.response_class(generate(), status=req.status_code, content_type=content_type or "video/mp2t")
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
     except Exception as e:
         return f"Proxy Error: {str(e)}", 500
+
 
 @app.route('/api/parse', methods=['POST', 'OPTIONS'])
 def parse_playlist():
